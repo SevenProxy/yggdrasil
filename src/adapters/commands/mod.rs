@@ -43,4 +43,7 @@
 */
 // 📦 Export module
 mod nick;
+mod join;
+
 pub use nick::nick_command;
+pub use join::join_command;

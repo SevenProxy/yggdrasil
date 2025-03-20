@@ -1,11 +1,12 @@
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+// 📦 Import modules
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use std::sync::Arc;
-use crate::adapters::commands::nick_command;
+
+use crate::adapters::commands::{nick_command, join_command};
 use  crate::error::ServerError;
 use crate::{SharedState, SharedChannels};
-use crate::adapters::presenters::MessageClint;
+use crate::adapters::presenters::{MessageClint, SafeTcpStream};
 
 pub struct Handler {
   pub socket: Arc<Mutex<TcpStream>>,
@@ -25,116 +26,85 @@ impl Handler {
   }
 
   pub async fn client(&mut self) -> Result<(), ServerError> {
-    let mut buffer = [0; 1024];
+    let buffer = [0; 1024];
     #[allow(unused_assignments)]
     let mut nick = String::new();
 
     loop {
-      let mut socket = self.socket.lock().await;
-
-      // Analisando os dados recebidos, caso seja "0", significa que a conexão foi fechada.
-      //
-      // let n: usize = 0 { return Ok(()) };
-      let n = match socket.read(&mut buffer).await {// Função read, ler dados do client, no caso, da conexão estabelecida (Socket)
-        // ❌ Conexão fechada?
-        Ok(0) => return Ok(()),
-        // ✅ Sucesso
-        Ok(n) => n,
-        Err(e) => {
-          println!("Erro ao receber mensagem: {:?}", e);
-          return Ok(());
-        }
+      //let socket = self.socket.lock().await;
+      let safe_tcp_stream = SafeTcpStream {
+        socket:  self.socket.clone(),
       };
-      println!("{}", n);
-      let message = String::from_utf8_lossy(&buffer[..n]);
-
-      // Verificação simples para saber se a mensagem está vazia.
-      //
-      // if "".is_empty() = true;
-      if message.is_empty() {
-        return Ok(());
-      }
-
+      let mut class_message_client = MessageClint::new(safe_tcp_stream, self.channels.clone());
+      let result_message_recive = class_message_client.recive_client_message(buffer).await?;
       // Transformando a mensagem envaida pelo Client em vetor e passando-a para uma variavel.
       //
       // let parts = [1, 2, 3];
-      let parts: Vec<&str> = message.split_whitespace().collect();
+      let parts: Vec<&str> = result_message_recive.split_whitespace().collect();
 
       println!("{:?}", parts);
       // if message.starts_with("NICK") {}
       match parts.get(0) {
+        Some(&"MODE") if parts.len() > 2 => {
+          let target = parts[1].to_string();
+          let flags = parts[2].to_string();
+          if flags == "+i" {
+              let message = format!(":{} MODE {} +i\r\n", "server", target);
+              class_message_client.send_message_client(message).await?;
+          } else {
+              let message_waring = format!(":server 501 :Invalid mode\r\n");
+              class_message_client.send_message_client(message_waring).await?;
+          }
+        }
+        Some(&"USER") if parts.len() > 3 => {
+          let username = parts[1].to_string();
+          let hostname = parts[2].to_string(); // Host/client que ta se conectando.
+          
+          let message_welcome_client = format!(":server 001 {} {} :Bem-vindo ao servidor IRC\r\n", username, hostname);
+          class_message_client.send_message_client(message_welcome_client).await?;
+      
+          let message_username_success = format!(":{} NICK {}\r\n", "server", username);
+          class_message_client.send_message_client(message_username_success).await?;
+        }
         Some(&"PING") => {
           if parts.len() > 1 {
             let token = parts[1];
             println!("{:?}", token);
-            socket.write_all(format!("PONG {}\r\n", token).as_bytes()).await?; // Função para enviar dados para o client (conexão estabelecida). Aceita apenas via bytes.
+            let message_ping = format!("PONG {}\r\n", token);
+            class_message_client.send_message_client(message_ping).await?;
           }
         }
         Some(&"CAP") => {
-          socket.write_all(b":server CAP * LS :\r\n").await?;
+          let message_cap = format!(":server CAP * LS :<capability>\r\n");
+          class_message_client.send_message_client(message_cap).await?;
         }
         Some(&"NICK") => {
           nick = parts[1].to_string();
-          let message_client = MessageClint::new(socket);
-          let _ = nick_command(message_client, parts).await;
+          let _ = nick_command(class_message_client, parts).await;
         }
         
-        Some(&"JOIN") if parts.len() > 1 => {
-          let channel = parts[1].to_string();
-          let mut channels = self.channels.lock().await;
-          
-          let join_message = format!(":{} JOIN {}\r\n", nick, channel);
-          socket.write_all(join_message.as_bytes()).await?;
-          
-          //channels.entry(channel.clone()).or_insert_with(Vec::new).push(self.socket.());
-          //
-          let entry = channels.entry(channel.to_string()).or_insert_with(Vec::new);
-          entry.push(Arc::clone(&self.socket));
+        Some(&"JOIN") => {
+          let _ = join_command(class_message_client, parts, nick.clone()).await;
         }
         Some(&"PRIVMSG") if parts.len() > 2 => {
           let target = parts[1];
           let msg = parts[2..].join(" ");
-
+  
           if target.starts_with("#") {
-            let broadcast_message = format!(":{} PRIVMSG {} :{}\r\n", nick, target, msg);
-            self.broadcast(&target, &broadcast_message).await?;
+            let broadcast_message = format!(":{} PRIVMSG {} {}\r\n", nick, target, msg);
+            class_message_client.broadcast(&target, &broadcast_message).await?;
           } else {
             let message_private = format!(":{} {} {}", nick, target, msg);
-            socket.write_all(message_private.as_bytes()).await?;
+            class_message_client.send_message_client(message_private).await?;
           }
         }
         _ => {
-          socket.write_all(b":server 421 :Comando desconhecido\r\n").await?;
+          let message_command_undefined = format!(":server 421 :Comando desconhecido\r\n");
+          class_message_client.send_message_client(message_command_undefined).await?;
         }
       }
     }
   }
-
-  pub async fn broadcast(&self, channel: &str, message: &str) -> Result<(), ServerError> {
-    let clients = {
-      let channels = self.channels.lock().await;
-      channels.get(channel).cloned()
-    };
-
-    if let Some(clients) = clients {
-      if clients.is_empty() {
-        println!("O canal '{}' não tem clientes.", channel);
-      } else {
-        for client in clients {
-          let mut client_socket = client.lock().await;
-          if let Err(_) = client_socket.write_all(message.as_bytes()).await {
-            println!("Erro ao enviar mensagem!");
-          } else {
-            println!("Mandou mensagem!");
-          }
-        }
-      }
-    } else {
-      println!("Canal '{}' não encontrado.", channel);
-    }
-    Ok(())
-  }
-
 
 }
 

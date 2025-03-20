@@ -9,6 +9,7 @@ pub use std::sync::Arc;
 pub use std::collections::HashMap;
 pub use infra::handler::Handler;
 pub use error::ServerError;
+pub use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 
 // 📦 Export types
 pub type SharedState = Arc<Mutex<HashMap<String, TcpStream>>>;
