@@ -44,6 +44,12 @@
 // 📦 Export module
 mod nick;
 mod join;
+mod privmsg;
+mod ping;
+mod mode;
 
 pub use nick::nick_command;
 pub use join::join_command;
+pub use privmsg::privmsg_command;
+pub use ping::ping_command;
+pub use mode::mode_command;

@@ -3,10 +3,10 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use std::sync::Arc;
 
-use crate::adapters::commands::{nick_command, join_command};
 use  crate::error::ServerError;
 use crate::{SharedState, SharedChannels};
 use crate::adapters::presenters::{MessageClint, SafeTcpStream};
+use crate::adapters::commands::{nick_command, join_command, privmsg_command, ping_command, mode_command};
 
 pub struct Handler {
   pub socket: Arc<Mutex<TcpStream>>,
@@ -45,34 +45,11 @@ impl Handler {
       println!("{:?}", parts);
       // if message.starts_with("NICK") {}
       match parts.get(0) {
-        Some(&"MODE") if parts.len() > 2 => {
-          let target = parts[1].to_string();
-          let flags = parts[2].to_string();
-          if flags == "+i" {
-              let message = format!(":{} MODE {} +i\r\n", "server", target);
-              class_message_client.send_message_client(message).await?;
-          } else {
-              let message_waring = format!(":server 501 :Invalid mode\r\n");
-              class_message_client.send_message_client(message_waring).await?;
-          }
-        }
-        Some(&"USER") if parts.len() > 3 => {
-          let username = parts[1].to_string();
-          let hostname = parts[2].to_string(); // Host/client que ta se conectando.
-          
-          let message_welcome_client = format!(":server 001 {} {} :Bem-vindo ao servidor IRC\r\n", username, hostname);
-          class_message_client.send_message_client(message_welcome_client).await?;
-      
-          let message_username_success = format!(":{} NICK {}\r\n", "server", username);
-          class_message_client.send_message_client(message_username_success).await?;
+        Some(&"MODE") => {
+          let _ = mode_command(class_message_client, parts).await;
         }
         Some(&"PING") => {
-          if parts.len() > 1 {
-            let token = parts[1];
-            println!("{:?}", token);
-            let message_ping = format!("PONG {}\r\n", token);
-            class_message_client.send_message_client(message_ping).await?;
-          }
+          let _ = ping_command(class_message_client, parts).await;
         }
         Some(&"CAP") => {
           let message_cap = format!(":server CAP * LS :<capability>\r\n");
@@ -82,21 +59,11 @@ impl Handler {
           nick = parts[1].to_string();
           let _ = nick_command(class_message_client, parts).await;
         }
-        
         Some(&"JOIN") => {
           let _ = join_command(class_message_client, parts, nick.clone()).await;
         }
-        Some(&"PRIVMSG") if parts.len() > 2 => {
-          let target = parts[1];
-          let msg = parts[2..].join(" ");
-  
-          if target.starts_with("#") {
-            let broadcast_message = format!(":{} PRIVMSG {} {}\r\n", nick, target, msg);
-            class_message_client.broadcast(&target, &broadcast_message).await?;
-          } else {
-            let message_private = format!(":{} {} {}", nick, target, msg);
-            class_message_client.send_message_client(message_private).await?;
-          }
+        Some(&"PRIVMSG") => {
+          let _ = privmsg_command(class_message_client, parts, nick.clone()).await;
         }
         _ => {
           let message_command_undefined = format!(":server 421 :Comando desconhecido\r\n");
